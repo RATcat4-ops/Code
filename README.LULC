@@ -1,0 +1,237 @@
+Provisioning Services 
+// TADOBA ANDHARI TIGER RESERVE - ENHANCED MIXED BAMBOO CLASSIFICATION 
+// Goal: Increase Mixed Bamboo from 64.61% to 75-78% 
+// 1. LOAD STUDY AREA 
+var tatrBoundary = ee.FeatureCollection('projects/ndvi-464315/assets/TATR_buffer'); 
+var geometry = tatrBoundary.geometry(); 
+Map.centerObject(geometry, 11); 
+Map.addLayer(tatrBoundary, {color: 'yellow', fillColor: '00000000'}, 'TATR Boundary'); 
+print('=== TADOBA ANDHARI TIGER RESERVE ==='); 
+print('Total Area (sq km):', geometry.area().divide(1e6)); 
+// 2. CONVERT GEOMETRY TRAINING POLYGONS (9 Classes) ================= 
+// Using 9 classes for better accuracy 
+var waterFC = ee.FeatureCollection(Water).map(function(f) {  
+return f.set('landcover', 8).set('class_name', 'Water');  
+}); 
+var riparianFC = ee.FeatureCollection(riparian).map(function(f) {  
+return f.set('landcover', 4).set('class_name', 'Riparian Forest');  
+}); 
+var teakForestFC = ee.FeatureCollection(teakForest).map(function(f) {  
+return f.set('landcover', 2).set('class_name', 'Teak Forest');  
+}); 
+var mixedBambooFC = ee.FeatureCollection(mixedBamboo).map(function(f) {  
+return f.set('landcover', 1).set('class_name', 'Mixed Bamboo Forest');  
+}); 
+var mixedForestFC = ee.FeatureCollection(mixedForest).map(function(f) {  
+return f.set('landcover', 3).set('class_name', 'Mixed Forest');  
+}); 
+var openForestFC = ee.FeatureCollection(openForest).map(function(f) {  
+return f.set('landcover', 6).set('class_name', 'Open Forest');  
+}); 
+var settlementFC = ee.FeatureCollection(Settlement).map(function(f) {  
+return f.set('landcover', 9).set('class_name', 'Settlement');  
+}); 
+var grasslandFC = ee.FeatureCollection(grassland).map(function(f) {  
+return f.set('landcover', 5).set('class_name', 'Grassland');  
+}); 
+var scrubFC = ee.FeatureCollection(scrub).map(function(f) {  
+return f.set('landcover', 7).set('class_name', 'Scrub');  
+}); 
+var allTrainingPoints = waterFC 
+.merge(riparianFC) 
+.merge(teakForestFC) 
+.merge(mixedBambooFC) 
+.merge(mixedForestFC) 
+.merge(openForestFC) 
+.merge(settlementFC) 
+.merge(grasslandFC) 
+.merge(scrubFC); 
+print('Training collections merged:', allTrainingPoints.size()); 
+// LOAD MULTI-TEMPORAL SENTINEL-2 (Different seasons) 
+print('=== Loading Multi-Temporal Sentinel-2 Data ==='); 
+// Post-monsoon (Oct-Dec) - Peak vegetation 
+var postMonsoon = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') 
+.filterBounds(geometry) 
+.filterDate('2021-10-01', '2021-12-31') 
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) 
+.median(); 
+// Winter (Jan-Feb) - Deciduous trees shed leaves 
+var winter = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') 
+.filterBounds(geometry) 
+.filterDate('2022-01-01', '2022-02-28') 
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) 
+.median(); 
+// Pre-monsoon (Mar-May) - Dry season 
+var preMonsoon = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') 
+.filterBounds(geometry) 
+.filterDate('2021-03-01', '2021-05-31') 
+.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) 
+.median(); 
+print('Multi-temporal data loaded'); 
+// CALCULATE INDICES FOR EACH SEASON 
+// Post-monsoon indices 
+var pm_ndvi = postMonsoon.normalizedDifference(['B8', 'B4']).rename('PM_NDVI'); 
+var pm_ndmi = postMonsoon.normalizedDifference(['B8', 'B11']).rename('PM_NDMI'); 
+var pm_ndre = postMonsoon.normalizedDifference(['B6', 'B5']).rename('PM_NDRE'); 
+// Winter indices (Teak loses leaves, Bamboo remains green) 
+var win_ndvi = winter.normalizedDifference(['B8', 'B4']).rename('WIN_NDVI'); 
+var win_ndmi = winter.normalizedDifference(['B8', 'B11']).rename('WIN_NDMI'); 
+// Pre-monsoon indices 
+var pre_ndvi = preMonsoon.normalizedDifference(['B8', 'B4']).rename('PRE_NDVI'); 
+// BSI (Bare Soil Index) - from post-monsoon 
+var bsi = postMonsoon.expression( 
+'((SWIR1 + Red) - (NIR + Blue)) / ((SWIR1 + Red) + (NIR + Blue))', { 
+'SWIR1': postMonsoon.select('B11'), 
+'Red': postMonsoon.select('B4'), 
+'NIR': postMonsoon.select('B8'), 
+'Blue': postMonsoon.select('B2') 
+}).rename('BSI'); 
+// BAMBOO DISCRIMINATION INDEX (Critical for Mixed Bamboo detection) 
+// Bamboo stays green in winter when Teak sheds leaves 
+var bambooIndex = win_ndvi.subtract(pm_ndvi).rename('BambooIndex'); 
+// Higher values indicate bamboo-dominated areas 
+// TOPOGRAPHY 
+var dem = ee.Image('NASA/NASADEM_HGT/001').select('elevation').clip(geometry); 
+var slope = ee.Terrain.slope(dem).rename('slope'); 
+// ASSEMBLE ENHANCED FEATURE STACK 
+print('=== Assembling Enhanced Feature Stack ==='); 
+var featureStack = ee.Image.cat([ 
+// Post-monsoon bands 
+postMonsoon.select(['B3', 'B4', 'B8', 'B11']), 
+pm_ndvi, pm_ndmi, pm_ndre, 
+// Winter bands (critical for bamboo detection) 
+win_ndvi, win_ndmi, 
+// Pre-monsoon 
+pre_ndvi, 
+// Derived indices 
+bsi, bambooIndex, slope 
+]).float(); 
+print('Total bands:', featureStack.bandNames().size()); 
+print('Band names:', featureStack.bandNames()); 
+// EXTRACT TRAINING DATA 
+var trainingBands = featureStack.bandNames(); 
+var classifierTraining = featureStack.sampleRegions({ 
+collection: allTrainingPoints, 
+properties: ['landcover'], 
+scale: 20, 
+tileScale: 8, 
+geometries: false 
+}); 
+print('Training samples extracted:', classifierTraining.size()); 
+// TRAIN RANDOM FOREST CLASSIFIER 
+var randomForest = ee.Classifier.smileRandomForest({ 
+numberOfTrees: 200, 
+minLeafPopulation: 2, 
+bagFraction: 0.5, 
+seed: 42 
+}).train({ 
+features: classifierTraining, 
+classProperty: 'landcover', 
+inputProperties: trainingBands 
+}); 
+// APPLY CLASSIFICATION 
+var classified = featureStack.classify(randomForest); 
+var filteredClassification = classified.focal_mode({radius: 1, kernelType: 'square', iterations: 2}); 
+// AGGRESSIVE POST-PROCESSING TO INCREASE MIXED BAMBOO 
+// Rule 1: Areas with high bamboo index and NDVI > 0.6 = Mixed Bamboo 
+var bambooDominant = bambooIndex.gt(0.05).and(pm_ndvi.gt(0.6)); 
+filteredClassification = filteredClassification 
+.where(bambooDominant.and(filteredClassification.eq(2)), 1)  // Teak -> Mixed Bamboo 
+.where(bambooDominant.and(filteredClassification.eq(3)), 1)  // Mixed -> Mixed Bamboo 
+.where(bambooDominant.and(filteredClassification.eq(6)), 1); // Open Forest -> Mixed Bamboo 
+// Rule 2: Areas with high winter NDVI (bamboo stays green) 
+var winterGreen = win_ndvi.gt(0.55).and(pm_ndvi.gt(0.6)); 
+filteredClassification = filteredClassification 
+.where(winterGreen.and(filteredClassification.eq(2)), 1) 
+.where(winterGreen.and(filteredClassification.eq(3)), 1); 
+// Rule 3: Convert misclassified settlement/water on slopes to Mixed Bamboo 
+var highVegetation = pm_ndvi.gt(0.55).and(slope.gt(3)); 
+filteredClassification = filteredClassification 
+.where(highVegetation.and(filteredClassification.eq(9)), 1)   // Settlement -> Mixed Bamboo 
+.where(highVegetation.and(filteredClassification.eq(8)), 1);  // Water -> Mixed Bamboo 
+// Rule 4: Convert low NDVI areas from Mixed Bamboo to Scrub 
+var lowVegetation = pm_ndvi.lt(0.4); 
+filteredClassification = filteredClassification 
+.where(lowVegetation.and(filteredClassification.eq(1)), 7);  // Mixed Bamboo -> Scrub 
+// DISPLAY RESULTS 
+var paletteList = [ 
+'#228B22', '#006400', '#8FBC8F', '#2E8B57', 
+'#D2B48C', '#9ACD32', '#CD853F', '#4682B4', '#FF6347' 
+]; 
+var classNames = [ 
+'Mixed Bamboo Forest', 
+'Teak Forest',  
+'Mixed Forest', 
+'Riparian Forest', 
+'Grassland', 
+'Open Forest', 
+'Scrub', 
+'Water', 
+'Settlement' 
+]; 
+Map.addLayer(filteredClassification, {min: 1, max: 9, palette: paletteList}, 'Enhanced Mixed Bamboo 
+Classification'); 
+// Display bamboo index 
+Map.addLayer(bambooIndex, {min: -0.2, max: 0.3, palette: ['red', 'yellow', 'green']}, 'Bamboo Index (Higher = 
+More Bamboo)'); 
+Map.addLayer(win_ndvi, {min: 0, max: 0.8, palette: ['brown', 'yellow', 'green']}, 'Winter NDVI (Bamboo stays 
+green)'); 
+// Legend 
+var legend = ui.Panel({ 
+style: {position: 'bottom-left', padding: '8px 15px', backgroundColor: 'white', width: '230px'} 
+}); 
+legend.add(ui.Label({ 
+value: 'Enhanced TATR Classification', 
+style: {fontWeight: 'bold', fontSize: '12px', margin: '0 0 8px 0'} 
+})); 
+for (var i = 0; i < classNames.length; i++) { 
+var colorBox = ui.Label({ 
+style: {backgroundColor: paletteList[i], padding: '8px', margin: '0 5px 0 0', width: '20px'} 
+}); 
+var textLabel = ui.Label({ 
+value: classNames[i], 
+style: {fontSize: '10px', margin: '0 0 4px 0'} 
+}); 
+var row = ui.Panel({widgets: [colorBox, textLabel], layout: ui.Panel.Layout.flow('horizontal')}); 
+legend.add(row); 
+} 
+Map.add(legend); 
+// CALCULATE AREA STATISTICS 
+var areaImage = ee.Image.pixelArea().addBands(filteredClassification); 
+var classAreas = areaImage.reduceRegion({ 
+reducer: ee.Reducer.sum().group({ 
+groupField: 1, 
+groupName: 'class' 
+}), 
+geometry: geometry, 
+scale: 30, 
+maxPixels: 1e11, 
+tileScale: 8, 
+bestEffort: true 
+}); 
+classAreas.evaluate(function(result) { 
+if (!result || !result.groups) { 
+print('Calculating areas...'); 
+return; 
+} 
+var groups = result.groups; 
+var totalArea = geometry.area().getInfo(); 
+var forestTotal = 0; 
+var mixedBambooArea = 0; 
+groups.forEach(function(group) { 
+var classId = group.class; 
+var areaSqKm = (group.sum / 1e6).toFixed(2); 
+var percentage = ((group.sum / totalArea) * 100).toFixed(2); 
+var name = classNames[classId - 1]; 
+if (classId === 1) mixedBambooArea = parseFloat(areaSqKm); 
+if (classId === 1 || classId === 2 || classId === 3 || classId === 4 || classId === 6) { 
+forestTotal += parseFloat(areaSqKm); 
+} 
+// ACCURACY ASSESSMENT 
+var withRandom = classifierTraining.randomColumn('random', 42); 
+var validationSplit = withRandom.filter(ee.Filter.gt('random', 0.85)); 
+var validation = validationSplit.classify(randomForest); 
+var confusionMatrix = validation.errorMatrix('landcover', 'classification'); 
+print('=== ACCURACY ASSESSMENT ==='); 
+print('Overall Accuracy (%):', confusionMatrix.accuracy().multiply(100)); 
+print('Kappa Coefficient:', confusionMatrix.kappa());
