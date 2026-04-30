@@ -235,3 +235,57 @@ var confusionMatrix = validation.errorMatrix('landcover', 'classification');
 print('=== ACCURACY ASSESSMENT ==='); 
 print('Overall Accuracy (%):', confusionMatrix.accuracy().multiply(100)); 
 print('Kappa Coefficient:', confusionMatrix.kappa());
+    # Your data
+                                     land_cover <- data.frame(
+                                       Category = c("Mixed Bamboo Forest", "Settlement/Agriculture", "Grassland", 
+                                                    "Teak Forest", "Open Forest", "Water", "Scrub", 
+                                                    "Mixed Forest", "Riparian Forest"),
+                                       Area_sqkm = c(1163.34, 230.98, 88.58, 60.35, 42.13, 37.00, 10.28, 4.49, 2.71)
+                                     )
+                                     
+                                     # Calculate percentages
+                                     land_cover$Percentage <- round((land_cover$Area_sqkm / sum(land_cover$Area_sqkm)) * 100, 1)
+                                     
+                                     # Create horizontal bar chart - FIXED VERSION
+                                     ggplot(land_cover, aes(x = reorder(Category, Area_sqkm), y = Area_sqkm, fill = Category)) +
+                                       geom_bar(stat = "identity", width = 0.8) +
+                                       coord_flip(clip = "off") +  # Allow drawing outside plot area
+                                       scale_fill_manual(values = c(
+                                         "Mixed Bamboo Forest" = "#4CAF50",
+                                         "Settlement/Agriculture" = "#FF7043",
+                                         "Grassland" = "#D2B48C",
+                                         "Teak Forest" = "#004D40",
+                                         "Open Forest" = "#8BC34A",
+                                         "Water" = "#42A5F5",
+                                         "Scrub" = "#CD853F",
+                                         "Mixed Forest" = "#66BB6A",
+                                         "Riparian Forest" = "#81C784"
+                                       )) +
+                                       labs(title = "LULC Distribution in Tadoba Andhari Tiger Reserve 2021",
+                                            subtitle = paste0("Total Area: ", sum(land_cover$Area_sqkm), " sq km"),
+                                            x = "",
+                                            y = "Area (km²)") +
+                                       theme_minimal(base_size = 10) +
+                                       theme(
+                                         # Clean grid
+                                         panel.grid.major.y = element_blank(),
+                                         panel.grid.minor = element_blank(),
+                                         panel.grid.major.x = element_line(color = "gray90", linetype = "dashed"),
+                                         # Axis styling
+                                         axis.text.y = element_text(size = 9.5, hjust = 0),
+                                         axis.text.x = element_text(size = 10),
+                                         axis.title.x = element_text(face = "bold", size = 10),
+                                         axis.line.x = element_line(color = "black", linewidth = 0.3),
+                                         # Title styling
+                                         plot.title = element_text(face = "bold", size = 12, hjust = 0.5),
+                                         plot.subtitle = element_text(color = "black", size = 10, hjust = 0.5),
+                                         # Remove legend
+                                         legend.position = "none",
+                                         # Increase right margin for labels
+                                         plot.margin = margin(0.8, 4, 0.8, 0.8, "cm")
+                                       ) +
+                                       # Add labels at the end of each bar
+                                       geom_text(aes(label = paste0(round(Area_sqkm, 0), " km² (", round(Percentage, 1), "%)")), 
+                                                 hjust = -0.1, size = 3.1, fontface = "bold") +
+                                       # Expand y-axis (which becomes x-axis after coord_flip) limits
+                                       scale_y_continuous(expand = expansion(mult = c(0.02, 0.25))) 
